@@ -13,6 +13,7 @@ const (
 )
 
 type clientTransferPayload struct {
+	Shared      bool   `json:"shared,omitempty"`
 	Format      string `json:"format"`
 	Version     int    `json:"version"`
 	CreatedAt   int64  `json:"created_at"`
@@ -40,6 +41,7 @@ func encodeClientTransfer(password string, entry *PasswordEntry) (string, error)
 		VkHash:      strings.TrimSpace(entry.VkHash),
 		ExpiresAt:   entry.ExpiresAt,
 		Deactivated: entry.IsDeactivated,
+		Shared:      entry.Shared,
 	}
 	if payload.VkHash != "" {
 		normalized, err := normalizeTransferVKHashes(payload.VkHash)

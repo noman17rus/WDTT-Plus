@@ -53,7 +53,8 @@ const (
 	wdttServerVersion     = "20"
 	wgIfaceName           = "wdtt0"
 	wgServerAddr          = "10.66.66.1"
-	wgServerCIDR          = wgServerAddr + "/24"
+	wgServerCIDR          = wgServerAddr + "/16"
+	wgSubnetCIDR          = "10.66.0.0/16"
 	defaultInternalWGPort = 56001
 	defaultDNS            = "1.1.1.1"
 	wgMTU                 = 1280
@@ -252,6 +253,8 @@ type ClientDevice struct {
 }
 
 type PasswordEntry struct {
+	Shared         bool                     `json:"shared,omitempty"`
+	DeviceIDs      []string                 `json:"device_ids,omitempty"`
 	DeviceID       string                   `json:"device_id"`  // пусто = ещё не привязан
 	ExpiresAt      int64                    `json:"expires_at"` // unix timestamp
 	PurgeAfter     int64                    `json:"purge_after,omitempty"`
@@ -805,10 +808,13 @@ func getNextIP() string {
 	for _, dev := range db.Devices {
 		used[dev.IP] = true
 	}
-	for i := 2; i <= 250; i++ {
-		ip := fmt.Sprintf("10.66.66.%d", i)
-		if !used[ip] {
-			return ip
+	for offset := 0; offset < 256; offset++ {
+		third := (66 + offset) % 256
+		for host := 2; host <= 250; host++ {
+			ip := fmt.Sprintf("10.66.%d.%d", third, host)
+			if !used[ip] {
+				return ip
+			}
 		}
 	}
 	return ""
@@ -846,9 +852,9 @@ func cleanupExpiredPasswordsLockedAt(wgDev wgDevice, nowUnix int64) int {
 	deviceCandidates := make(map[string]struct{})
 	for p, entry := range db.Passwords {
 		if isPasswordPurgeableAt(entry, nowUnix) {
-			if entry != nil && entry.DeviceID != "" {
-				markActiveBindUnbound(entry, entry.DeviceID, nowUnix)
-				deviceCandidates[entry.DeviceID] = struct{}{}
+			for _, deviceID := range passwordDeviceIDs(entry) {
+				markActiveBindUnbound(entry, deviceID, nowUnix)
+				deviceCandidates[deviceID] = struct{}{}
 			}
 			delete(db.Passwords, p)
 			serverWrapKeys.RemovePassword(p)
@@ -877,7 +883,7 @@ func databaseUsesDeviceIDExcept(loaded *Database, deviceID, excludedPassword str
 		if excludedPassword != "" && password == excludedPassword {
 			continue
 		}
-		if entry != nil && entry.DeviceID == deviceID {
+		if passwordHasDevice(entry, deviceID) {
 			return true
 		}
 	}
@@ -1412,9 +1418,9 @@ func setupFullConeNAT(wgIface string) error {
 	switch {
 	case commandExists("iptables"):
 		for i := 0; i < 5; i++ {
-			exec.Command("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", wgServerCIDR, "-o", extIface, "-m", "comment", "--comment", "WDTT_MANAGED", "-j", "MASQUERADE").Run()
+			exec.Command("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", wgSubnetCIDR, "-o", extIface, "-m", "comment", "--comment", "WDTT_MANAGED", "-j", "MASQUERADE").Run()
 		}
-		exec.Command("iptables", "-t", "nat", "-I", "POSTROUTING", "1", "-s", wgServerCIDR, "-o", extIface, "-m", "comment", "--comment", "WDTT_MANAGED", "-j", "MASQUERADE").Run()
+		exec.Command("iptables", "-t", "nat", "-I", "POSTROUTING", "1", "-s", wgSubnetCIDR, "-o", extIface, "-m", "comment", "--comment", "WDTT_MANAGED", "-j", "MASQUERADE").Run()
 		natType = "MASQUERADE iptables ✅"
 		setupForwardRules(wgIface)
 	case commandExists("nft"):
@@ -1434,7 +1440,7 @@ func setupFullConeNAT(wgIface string) error {
 func setupNftNAT(extIface string) {
 	exec.Command("nft", "add", "table", "ip", "wdtt").Run()
 	exec.Command("nft", "add", "chain", "ip", "wdtt", "postrouting", "{ type nat hook postrouting priority 100; }").Run()
-	exec.Command("nft", "add", "rule", "ip", "wdtt", "postrouting", "ip", "saddr", wgServerCIDR, "oifname", extIface, "masquerade").Run()
+	exec.Command("nft", "add", "rule", "ip", "wdtt", "postrouting", "ip", "saddr", wgSubnetCIDR, "oifname", extIface, "masquerade").Run()
 }
 
 func setupForwardRules(wgIface string) {
@@ -1872,7 +1878,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 				deviceLogRef(deviceID),
 			)
 			dbMutex.Unlock()
-		} else if valid && isGenPass && entry.DeviceID != "" && entry.DeviceID != deviceID {
+		} else if valid && isGenPass && !entry.Shared && entry.DeviceID != "" && entry.DeviceID != deviceID {
 			previousHistoryLength := len(entry.BindHistory)
 			appendBindHistory(entry, BindHistoryEntry{
 				DeviceID:   deviceID,
@@ -1898,17 +1904,18 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 		} else if valid {
 			newlyBound := false
 			previousDeviceID := ""
+			var previousDeviceIDs []string
 			previousHistoryLength := 0
 			previousAdminDeviceIDs := append([]string(nil), db.AdminProfile.DeviceIDs...)
 			if entry != nil {
 				previousDeviceID = entry.DeviceID
+				previousDeviceIDs = append([]string(nil), entry.DeviceIDs...)
 				previousHistoryLength = len(entry.BindHistory)
 			}
 
-			// Привязываем пароль к устройству при первом использовании
-			if isGenPass && entry.DeviceID == "" {
-				entry.DeviceID = deviceID
-				newlyBound = true
+			// Регистрируем устройство в пределах режима доступа.
+			if isGenPass && !passwordHasDevice(entry, deviceID) {
+				newlyBound = bindPasswordDevice(entry, deviceID)
 				log.Printf(
 					"[WG] Пароль %s привязан к устройству %s",
 					maskPassword(password),
@@ -1960,6 +1967,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 					}
 					if entry != nil {
 						entry.DeviceID = previousDeviceID
+						entry.DeviceIDs = previousDeviceIDs
 						entry.BindHistory = entry.BindHistory[:previousHistoryLength]
 					}
 					db.AdminProfile.DeviceIDs = previousAdminDeviceIDs
@@ -1969,11 +1977,22 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 			}
 			if dev != nil {
 				authorized = true
+				if isGenPass && entry.Shared {
+					identity.runtimeDevice = deviceID
+				}
 				snapshot := *dev
 				connDevice = &snapshot
 				configResponse = transportCapabilities() + buildClientConfig(keys.serverPublic, dev.PrivKey, dev.IP, clientPort)
 			} else {
-				configResponse = "NOCONF"
+				if entry != nil {
+					entry.DeviceID = previousDeviceID
+					entry.DeviceIDs = previousDeviceIDs
+					entry.BindHistory = entry.BindHistory[:previousHistoryLength]
+				}
+				db.AdminProfile.DeviceIDs = previousAdminDeviceIDs
+				if configResponse == "" {
+					configResponse = "NOCONF"
+				}
 			}
 			dbMutex.Unlock()
 		} else {
@@ -1997,7 +2016,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 			return
 		}
 
-		if workerAdmitted && len(workerRef) != 0 {
+		if workerAdmitted && (len(workerRef) != 0 || identity.runtimeDevice != "") {
 			// Re-enter the authenticated slot-aware admission path. The early
 			// compatibility lease has no relay attachment and releases once.
 			releaseWorker()

@@ -7783,7 +7783,7 @@ internal fun outboundShellPrelude(): String = """
     set -e
     umask 077
     WDTT_SUBNET="${'$'}(ip -4 route show dev wdtt0 scope link 2>/dev/null | awk '{print ${'$'}1; exit}')"
-    [ -n "${'$'}WDTT_SUBNET" ] || WDTT_SUBNET="10.66.66.0/24"
+    [ -n "${'$'}WDTT_SUBNET" ] || WDTT_SUBNET="10.66.0.0/16"
     WDTT_IFACE="wdtt0"
     WDTT_TABLE="100"
     WDTT_WG_IFACE="wg-wdtt-exit"
@@ -9020,7 +9020,7 @@ internal fun buildTunInterfaceExitScript(interfaceName: String): String {
         WDTT_TUN_TABLE=110
         WDTT_TUN_PRIORITY=90
         WDTT_SUBNET="${'$'}(ip -4 route show dev "${'$'}WDTT_IFACE" scope link 2>/dev/null | awk '{print ${'$'}1; exit}')"
-        [ -n "${'$'}WDTT_SUBNET" ] || WDTT_SUBNET=10.66.66.0/24
+        [ -n "${'$'}WDTT_SUBNET" ] || WDTT_SUBNET=10.66.0.0/16
         clear_forward_rules() {
           if command -v iptables >/dev/null 2>&1; then
             while iptables -D FORWARD -i "${'$'}WDTT_IFACE" -o "${'$'}TUN_IFACE" -m comment --comment WDTT_TUN_EXIT -j ACCEPT 2>/dev/null; do :; done
@@ -9687,7 +9687,7 @@ internal fun externalProxyRoutesScript(): String = """
     PROXY_IP="${'$'}{2:-}"
     WDTT_IFACE=wdtt0
     WDTT_SUBNET="${'$'}(ip -4 route show dev "${'$'}WDTT_IFACE" scope link | awk '{print ${'$'}1; exit}')"
-    [ -n "${'$'}WDTT_SUBNET" ] || WDTT_SUBNET=10.66.66.0/24
+    [ -n "${'$'}WDTT_SUBNET" ] || WDTT_SUBNET=10.66.0.0/16
     cleanup() {
       while iptables -D INPUT -i "${'$'}WDTT_IFACE" -s "${'$'}WDTT_SUBNET" -p tcp --dport 12345 -m comment --comment WDTT_PROXY_OUT -j ACCEPT 2>/dev/null; do :; done
       while iptables -t nat -D PREROUTING -i "${'$'}WDTT_IFACE" -p tcp -j WDTT_PROXY_OUT 2>/dev/null; do :; done
@@ -9992,7 +9992,7 @@ internal fun wireGuardPolicyScript(mode: String, detail: String): String = shell
     WDTT_WG_IFACE=wg-wdtt-exit
     WDTT_TABLE=100
     WDTT_SUBNET="${'$'}(ip -4 route show dev "${'$'}WDTT_IFACE" scope link 2>/dev/null | awk '{print ${'$'}1; exit}')"
-    [ -n "${'$'}WDTT_SUBNET" ] || WDTT_SUBNET=10.66.66.0/24
+    [ -n "${'$'}WDTT_SUBNET" ] || WDTT_SUBNET=10.66.0.0/16
     wdtt_wg_up_cleanup() {
       status="${'$'}?"
       trap - 0
@@ -10027,7 +10027,7 @@ internal fun wireGuardPolicyScript(mode: String, detail: String): String = shell
     WDTT_WG_IFACE=wg-wdtt-exit
     WDTT_TABLE=100
     WDTT_SUBNET="${'$'}(ip -4 route show dev "${'$'}WDTT_IFACE" scope link 2>/dev/null | awk '{print ${'$'}1; exit}')"
-    [ -n "${'$'}WDTT_SUBNET" ] || WDTT_SUBNET=10.66.66.0/24
+    [ -n "${'$'}WDTT_SUBNET" ] || WDTT_SUBNET=10.66.0.0/16
     while iptables -D FORWARD -i "${'$'}WDTT_IFACE" -o "${'$'}WDTT_WG_IFACE" -s "${'$'}WDTT_SUBNET" -m comment --comment WDTT_EXIT_FORWARD -j ACCEPT 2>/dev/null; do :; done
     while iptables -D FORWARD -i "${'$'}WDTT_WG_IFACE" -o "${'$'}WDTT_IFACE" -d "${'$'}WDTT_SUBNET" -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment WDTT_EXIT_FORWARD -j ACCEPT 2>/dev/null; do :; done
     iptables -t nat -D POSTROUTING -s "${'$'}WDTT_SUBNET" -o "${'$'}WDTT_WG_IFACE" -m comment --comment WDTT_EXIT -j MASQUERADE 2>/dev/null || true
@@ -12196,7 +12196,7 @@ private fun validatePasswordEntry(pass: String, entry: JSONObject) {
     require(pass.length <= 256) { "пароль в passwords слишком длинный" }
     entry.optStringLength("device_id", 256, "пароля $pass")
     entry.optStringLength("label", 120, "пароля $pass")
-    entry.optStringLength("vk_hash", 512, "пароля $pass")
+    entry.optStringLength("vk_hash", 4096, "пароля $pass")
     val expiresAt = entry.optLong("expires_at", 0)
     val purgeAfter = entry.optLong("purge_after", 0)
     require(expiresAt >= 0) { "expires_at у пароля $pass должен быть >= 0" }
@@ -12262,7 +12262,7 @@ private fun validateDeviceEntry(deviceId: String, device: JSONObject) {
     val storedId = device.optString("device_id", deviceId)
     require(storedId.isNotBlank()) { "device_id устройства $deviceId пустой" }
     val ip = device.optString("ip")
-    require(ip.isBlank() || Regex("^10\\.66\\.66\\.([2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|250)$").matches(ip)) {
+    require(ip.isBlank() || Regex("^10\\.66\\.(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.([2-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|250)$").matches(ip)) {
         "некорректный IP устройства $deviceId"
     }
     val priv = device.optString("priv_key")
@@ -12352,7 +12352,7 @@ internal fun validatePasswordsDbStructure(db: JSONObject) {
     passwords.keys().forEach { pass ->
         val entry = passwords.optJSONObject(pass) ?: throw IllegalArgumentException("passwords.$pass должен быть объектом")
         validatePasswordEntry(pass, entry)
-        entry.optString("device_id", "").takeIf { it.isNotBlank() }?.let { deviceId ->
+        passwordDeviceIds(entry).forEach { deviceId ->
             require(devices.has(deviceId)) { "у пароля $pass указано отсутствующее устройство $deviceId" }
         }
     }
@@ -12469,7 +12469,7 @@ internal fun clientDeviceCountForBackup(database: JSONObject): Int {
     val passwords = database.optJSONObject("passwords") ?: return 0
     passwords.keys().forEach { password ->
         val entry = passwords.optJSONObject(password) ?: return@forEach
-        entry.optString("device_id").trim().takeIf(String::isNotEmpty)?.let(result::add)
+        result += passwordDeviceIds(entry)
         val history = entry.optJSONArray("bind_history") ?: return@forEach
         for (index in 0 until history.length()) {
             val event = history.optJSONObject(index) ?: continue
@@ -13452,7 +13452,7 @@ internal fun mergeServerDatabaseEntries(
         if (targetPasswords.has(password)) return@forEach
         val entry = JSONObject(sourcePasswords.getJSONObject(password).toString())
         entry.put("ports", portsSpec)
-        entry.optString("device_id", "").takeIf { it.isNotBlank() }?.let { deviceId ->
+        passwordDeviceIds(entry).forEach { deviceId ->
             val sourceDevice = sourceDevices.optJSONObject(deviceId)
                 ?: throw IllegalArgumentException("в бэкапе нет устройства $deviceId, привязанного к клиенту ${password.take(4)}…")
             targetDevices.optJSONObject(deviceId)?.let { targetDevice ->
@@ -13470,9 +13470,8 @@ internal fun mergeServerDatabaseEntries(
         val importedDevice = JSONObject(sourceDevices.getJSONObject(deviceId).toString())
         val sourceIp = importedDevice.optString("ip")
         val targetIp = sourceIp.takeIf { it.isNotBlank() && it !in usedDeviceIps }
-            ?: (2..250)
-                .asSequence()
-                .map { "10.66.66.$it" }
+            ?: (0..255).asSequence()
+                .flatMap { offset -> (2..250).asSequence().map { "10.66.${(66 + offset) % 256}.$it" } }
                 .firstOrNull { it !in usedDeviceIps }
             ?: throw IllegalStateException("на целевом сервере нет свободных внутренних IP для импортируемых устройств")
         importedDevice.put("ip", targetIp)
@@ -14291,8 +14290,9 @@ internal fun validatePreservedServerState(beforeJson: String, afterJson: String)
         ) {
             "после обновления изменилась история учёта перенесённого трафика клиента ${password.take(4)}…"
         }
-        val deviceId = oldEntry.optString("device_id", "")
-        if (deviceId.isNotBlank()) {
+        require(oldEntry.optBoolean("shared", false) == newEntry.optBoolean("shared", false)) { "после обновления изменился режим общей ссылки" }
+        require(passwordDeviceIds(newEntry).containsAll(passwordDeviceIds(oldEntry))) { "после обновления изменились устройства клиента" }
+        passwordDeviceIds(oldEntry).forEach { deviceId ->
             require(afterDevices.has(deviceId)) { "после обновления пропала привязка устройства клиента ${password.take(4)}…" }
         }
     }
@@ -14444,8 +14444,9 @@ internal fun validateImportedServerState(
         ) {
             "после импорта изменилась история учёта перенесённого трафика у клиента ${password.take(4)}…"
         }
-        val deviceId = expected.optString("device_id", "")
-        if (deviceId.isNotBlank()) {
+        require(expected.optBoolean("shared", false) == actual.optBoolean("shared", false)) { "после импорта изменился режим общей ссылки" }
+        require(passwordDeviceIds(actual).containsAll(passwordDeviceIds(expected))) { "после импорта изменились устройства клиента" }
+        passwordDeviceIds(expected).forEach { deviceId ->
             val expectedDevice = sourceDevices.optJSONObject(deviceId)
                 ?: throw IllegalStateException("в бэкапе отсутствует устройство клиента ${password.take(4)}…")
             val actualDevice = afterDevices.optJSONObject(deviceId)
@@ -14518,13 +14519,13 @@ internal fun validateImportedServerState(
             .asSequence()
             .mapNotNull { sourcePasswords.optJSONObject(it) }
             .filterNot { passwordShouldRemainAfterImport(it, safeExpiryCutoff) }
-            .mapNotNull { it.optString("device_id", "").takeIf(String::isNotBlank) }
+            .flatMap { passwordDeviceIds(it).asSequence() }
             .toSet()
         val retainedDeviceIds = sourcePasswords.keys()
             .asSequence()
             .mapNotNull { sourcePasswords.optJSONObject(it) }
             .filter { passwordShouldRemainAfterImport(it, safeExpiryCutoff) }
-            .mapNotNull { it.optString("device_id", "").takeIf(String::isNotBlank) }
+            .flatMap { passwordDeviceIds(it).asSequence() }
             .toMutableSet()
         expectedProfile?.optJSONArray("device_ids")?.let { ids ->
             for (index in 0 until ids.length()) {
@@ -14913,9 +14914,12 @@ private suspend fun performUninstall(
                 "if command -v iptables >/dev/null 2>&1; then " +
                     "for i in 1 2 3 4 5; do " +
                     "for iface in $(ls /sys/class/net 2>/dev/null || true); do " +
+                    "iptables -t nat -D POSTROUTING -s 10.66.0.0/16 -o \"${'$'}iface\" -m comment --comment WDTT_MANAGED -j MASQUERADE 2>/dev/null || true; " +
                     "iptables -t nat -D POSTROUTING -s 10.66.66.0/24 -o \"${'$'}iface\" -m comment --comment WDTT_MANAGED -j MASQUERADE 2>/dev/null || true; " +
                     "done; " +
+                    "iptables -t mangle -D FORWARD -s 10.66.0.0/16 -p tcp -m tcp --tcp-flags SYN,RST SYN -m comment --comment WDTT_MANAGED -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true; " +
                     "iptables -t mangle -D FORWARD -s 10.66.66.0/24 -p tcp -m tcp --tcp-flags SYN,RST SYN -m comment --comment WDTT_MANAGED -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true; " +
+                    "iptables -t mangle -D FORWARD -d 10.66.0.0/16 -p tcp -m tcp --tcp-flags SYN,RST SYN -m comment --comment WDTT_MANAGED -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true; " +
                     "iptables -t mangle -D FORWARD -d 10.66.66.0/24 -p tcp -m tcp --tcp-flags SYN,RST SYN -m comment --comment WDTT_MANAGED -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true; " +
                     "iptables -D INPUT -p udp --dport $dtlsPort -m comment --comment WDTT_MANAGED -j ACCEPT 2>/dev/null || true; " +
                     "iptables -D INPUT -p udp --dport $wgPort -m comment --comment WDTT_MANAGED -j ACCEPT 2>/dev/null || true; " +
@@ -17637,3 +17641,14 @@ private fun UninstallConfirmDialog(
     }
 }
 }
+
+private fun passwordDeviceIds(entry: JSONObject): List<String> = buildList {
+    entry.optString("device_id").trim().takeIf(String::isNotEmpty)?.let(::add)
+    entry.optJSONArray("device_ids")?.let { ids ->
+        for (index in 0 until ids.length()) {
+            val id = ids.optString(index).trim()
+            require(id.isNotEmpty() && id.length <= 256) { "Некорректный ID устройства общей ссылки" }
+            add(id)
+        }
+    }
+}.distinct()

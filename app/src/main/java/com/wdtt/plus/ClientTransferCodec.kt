@@ -14,7 +14,8 @@ data class ClientTransferPayload(
     val vkHash: String,
     val expiresAt: Long,
     val deactivated: Boolean,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val shared: Boolean = false
 )
 
 object ClientPasswordRules {
@@ -48,6 +49,7 @@ object ClientTransferCodec {
             .put("vk_hash", vkHash)
             .put("expires_at", payload.expiresAt)
             .put("deactivated", payload.deactivated)
+            .put("shared", payload.shared)
             .toString()
     }
 
@@ -69,6 +71,7 @@ object ClientTransferCodec {
             vkHash = vkHash,
             expiresAt = expiresAt,
             deactivated = json.optBoolean("deactivated", false),
+            shared = json.optBoolean("shared", false),
             createdAt = json.optLong("created_at", 0)
         )
     }
@@ -83,7 +86,8 @@ object ClientTransferCodec {
         label = client.label,
         vkHash = client.vkHash,
         expiresAt = client.expiresAt,
-        deactivated = client.status == "deactivated"
+        deactivated = client.status == "deactivated",
+        shared = client.shared
     )
 
     private fun normalizeVkHashes(value: String): String {

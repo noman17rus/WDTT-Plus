@@ -7,6 +7,21 @@ import org.junit.Test
 
 class ClientTransferCodecTest {
     @Test
+    fun sharedTransferKeepsFourCallsAndSharedMode() {
+        val hashes = "abcdefghijklmnop,qrstuvwxyzABCDEF,GHIJKLMNOPQRSTUV,WXYZabcdefghijkl"
+        val source = ClientTransferPayload("ABCDEFGHJKLMNPQR", "Общая", hashes, 0, false, shared = true)
+        assertEquals(source, ClientTransferCodec.decode(ClientTransferCodec.encode(source)))
+        val link = buildServerConnectionLink(source.password, hashes, "56000,56001,9000", "vpn.example.org", "")!!
+        assertEquals(hashes, WdttTransferCodec.parseConnectionLink(link)!!.hashes)
+    }
+
+    @Test
+    fun oldTransferDefaultsToSingleDevice() {
+        val value = """{"format":"wdtt-plus-client","version":1,"password":"ABCDEFGHJKLMNPQR","expires_at":0}"""
+        assertFalse(ClientTransferCodec.decode(value).shared)
+    }
+
+    @Test
     fun clientTransfer_roundTripsOnlyPortableFields() {
         val source = ClientTransferPayload(
             password = "ABCDEFGHJKLMNPQR",

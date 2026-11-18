@@ -1298,10 +1298,10 @@ fun ServerClientsSection(
             sourceProfileName = sourceProfileName,
             busy = busy,
             onDismiss = { detailsClient = null },
-            onSave = { label, hash, ports ->
+            onSave = { label, hash, ports, shared ->
                 detailsClient = null
                 runDirect("Обновляю клиента...") {
-                    ServerAdminClient.updateClient(target, client.password, label, hash, ports)
+                    ServerAdminClient.updateClient(target, client.password, label, hash, ports, shared.takeIf { it != client.shared })
                 }
             }
         )
@@ -1458,7 +1458,8 @@ private fun ServerClientCard(
                 buildString {
                     append("Срок: ${formatExpiry(client.expiresAt)}")
                     append(" · Трафик: ${formatBytes(client.downBytes + client.upBytes)}")
-                    if (client.deviceId.isNotBlank()) append(" · Устройство: ${client.deviceName.ifBlank { client.deviceId.take(8) }}")
+                    if (client.shared) append(" · Общая ссылка · Устройств: ${client.devices.size}")
+                    else if (client.deviceId.isNotBlank()) append(" · Устройство: ${client.deviceName.ifBlank { client.deviceId.take(8) }}")
                     else append(" · Не привязан")
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -1828,13 +1829,14 @@ private fun ClientDetailsDialog(
     sourceProfileName: String,
     busy: Boolean,
     onDismiss: () -> Unit,
-    onSave: (String, String, String) -> Unit
+    onSave: (String, String, String, Boolean) -> Unit
 ) {
     val context = LocalContext.current
     var step by rememberSaveable(client.password) { mutableStateOf(ClientDetailsStep.Overview) }
     var label by rememberSaveable(client.password) { mutableStateOf(client.label) }
     var hash by rememberSaveable(client.password) { mutableStateOf(client.vkHash) }
     var ports by rememberSaveable(client.password) { mutableStateOf(client.ports) }
+    var shared by rememberSaveable(client.password) { mutableStateOf(client.shared) }
     val portsValid = ports.isPortsSpec()
     val hashError = vkHashInputError(hash)
     val link = remember(client, fallbackHost, publicHost, sourceProfileName) {
@@ -1879,6 +1881,7 @@ private fun ClientDetailsDialog(
                                     }
                                     InfoLine("Статус", when (client.status) { "active" -> "активен"; "deactivated" -> "отключён"; "expired" -> "истёк"; else -> client.status })
                                     InfoLine("Срок", formatExpiry(client.expiresAt))
+                                    InfoLine("Доступ", if (client.shared) "Общая ссылка · без лимита устройств" else "Одно устройство")
                                     InfoLine("Порты", client.ports)
                                     InfoLine("ВК-хеш", client.vkHash.ifBlank { "не задан" })
                                     HorizontalDivider()
@@ -1886,7 +1889,12 @@ private fun ClientDetailsDialog(
                                 }
                                 ClientDetailsStep.Device -> {
                                     val device = client.device
-                                    if (device == null) {
+                                    if (client.shared) {
+                                        Text("Устройств: ${client.devices.size} · без лимита")
+                                        client.devices.forEach { item ->
+                                            InfoLine(item.name.ifBlank { item.deviceId }, "${item.ip} · ${formatDateTime(item.lastSeenAt)}")
+                                        }
+                                    } else if (device == null) {
                                         Text("Устройство ещё не привязано.")
                                     } else {
                                         InfoLine("Название", device.name.ifBlank { device.deviceId })
@@ -1929,6 +1937,8 @@ private fun ClientDetailsDialog(
                                     }
                                 }
                                 ClientDetailsStep.Edit -> {
+                                    SharedAccessChoice(shared, !busy) { shared = it }
+                                    if (client.shared && !shared) Text("При сохранении все устройства будут отвязаны. Следующее подключение займёт единственное место.", style = MaterialTheme.typography.bodySmall)
                                     OutlinedTextField(
                                         value = label,
                                         onValueChange = { label = it.take(40) },
@@ -1990,7 +2000,7 @@ private fun ClientDetailsDialog(
         confirmButton = {
             if (step == ClientDetailsStep.Edit) {
                 Button(
-                    onClick = { onSave(label, hash, ports) },
+                    onClick = { onSave(label, hash, ports, shared) },
                     enabled = !busy && portsValid && hashError == null
                 ) { Text("Сохранить") }
             }
@@ -2647,6 +2657,7 @@ private fun CreateClientWizardDialog(
     var useDefaultPorts by rememberSaveable { mutableStateOf(true) }
     var customPorts by rememberSaveable { mutableStateOf(defaultPorts) }
     var useAutoPassword by rememberSaveable { mutableStateOf(true) }
+    var shared by rememberSaveable { mutableStateOf(false) }
     var customPassword by rememberSaveable { mutableStateOf("") }
     val effectivePorts = if (useDefaultPorts) defaultPorts else customPorts
     val portsValid = effectivePorts.isPortsSpec()
@@ -2752,6 +2763,7 @@ private fun CreateClientWizardDialog(
                                     if (!portsValid) Text("Формат: 56000,56001,9000", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                                 }
                                 ClientWizardStep.Password -> {
+                                    SharedAccessChoice(shared, !busy) { shared = it }
                                     Text("Пароль клиента", fontWeight = FontWeight.Bold)
                                     Text(
                                         "Автоматический пароль безопаснее. Ручной режим нужен, например, для переноса существующего клиента с другого сервера.",
@@ -2784,6 +2796,7 @@ private fun CreateClientWizardDialog(
                                 }
                                 ClientWizardStep.Confirm -> {
                                     Text("Проверка", fontWeight = FontWeight.Bold)
+                                    Text(if (shared) "Общая ссылка · без лимита устройств" else "Доступ для одного устройства")
                                     Text("Срок: ${if (days == 0) "бессрочно" else "$days дн."}")
                                     Text("Название: ${label.ifBlank { "без имени" }}")
                                     Text("ВК-хеш: ${if (vkHash.isBlank()) "не задан" else "задан"}")
@@ -2821,7 +2834,8 @@ private fun CreateClientWizardDialog(
                                 label = label,
                                 vkHash = vkHash,
                                 ports = effectivePorts,
-                                password = customPassword.takeUnless { useAutoPassword }
+                                password = customPassword.takeUnless { useAutoPassword },
+                                shared = shared
                             )
                         )
                     } else {
@@ -3241,4 +3255,18 @@ private fun shareUri(context: Context, uri: Uri, mimeType: String, title: String
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     context.startActivity(Intent.createChooser(intent, title))
+}
+
+@Composable
+private fun SharedAccessChoice(shared: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+    Text("Устройства", fontWeight = FontWeight.Bold)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SelectButton("Одно", !shared, enabled = enabled) { onChange(false) }
+        SelectButton("Без лимита", shared, enabled = enabled) { onChange(true) }
+    }
+    Text(
+        if (shared) "Одна ссылка для одновременного подключения нескольких устройств. Звонки из профиля передаются всем получателям."
+        else "Доступ привязывается к первому устройству.",
+        style = MaterialTheme.typography.bodySmall
+    )
 }

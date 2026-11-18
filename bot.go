@@ -155,6 +155,7 @@ func createBotClient(
 	vkHash string,
 	ports string,
 	deactivated bool,
+	shared ...bool,
 ) (string, *PasswordEntry, error) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
@@ -226,6 +227,7 @@ func createBotClient(
 		VkHash:        normalizedHash,
 		Ports:         normalizedPorts,
 		IsDeactivated: deactivated,
+		Shared:        len(shared) > 0 && shared[0],
 	}
 	db.Passwords[password] = entry
 	saveDB()
@@ -260,8 +262,8 @@ func changeBotClientPassword(wgDev wgDevice, oldPassword, requested string) (str
 	delete(db.Passwords, oldPassword)
 	db.Passwords[newPassword] = entry
 	serverWrapKeys.RemovePassword(oldPassword)
-	if entry.DeviceID != "" {
-		removePeerFromWG(wgDev, db.Devices[entry.DeviceID])
+	for _, id := range passwordDeviceIDs(entry) {
+		removePeerFromWG(wgDev, db.Devices[id])
 	}
 	saveDB()
 	return newPassword, nil
@@ -1521,8 +1523,8 @@ func sendSettingsMenu(token string, adminID int64, messageID int) int {
 		if isPasswordExpired(entry) {
 			expired++
 		}
-		if entry.DeviceID != "" {
-			usedDevices[entry.DeviceID] = struct{}{}
+		for _, id := range passwordDeviceIDs(entry) {
+			usedDevices[id] = struct{}{}
 		}
 	}
 	for deviceID := range adminDeviceIDSet(db) {
@@ -1583,7 +1585,7 @@ func sendStatusMenu(token string, adminID int64, messageID int) int {
 		if entry.IsDeactivated {
 			deactivated++
 		}
-		if entry.DeviceID != "" {
+		if len(passwordDeviceIDs(entry)) != 0 {
 			bound++
 		}
 	}
@@ -1673,8 +1675,8 @@ func sendMaintenanceMenu(token string, adminID int64, messageID int) int {
 func collectOrphanDevicesLocked() []*ClientDevice {
 	usedDevices := make(map[string]struct{})
 	for _, entry := range db.Passwords {
-		if entry != nil && entry.DeviceID != "" {
-			usedDevices[entry.DeviceID] = struct{}{}
+		for _, id := range passwordDeviceIDs(entry) {
+			usedDevices[id] = struct{}{}
 		}
 	}
 	for deviceID := range adminDeviceIDSet(db) {
@@ -2050,6 +2052,9 @@ func deviceSummary(dev *ClientDevice) string {
 }
 
 func compactDeviceSummary(entry *PasswordEntry, dev *ClientDevice) string {
+	if entry != nil && entry.Shared {
+		return fmt.Sprintf("Общая ссылка · без лимита устройств · подключалось: %d\n", len(passwordDeviceIDs(entry)))
+	}
 	if entry == nil || entry.DeviceID == "" {
 		return "_Ожидает первого подключения..._\n"
 	}
@@ -2088,6 +2093,20 @@ func sendDeviceDetailsMenu(token string, adminID int64, messageID int, pass stri
 		return sendOrEditTelegram(token, adminID, messageID, "❌ Пароль не найден", inlineKeyboard(
 			[]map[string]interface{}{inlineButton("🔐 К списку", "backlist")},
 		))
+	}
+	if entry.Shared {
+		text := fmt.Sprintf("📱 *Общая ссылка* · устройств: %d\n", len(passwordDeviceIDs(entry)))
+		for index, id := range passwordDeviceIDs(entry) {
+			if index >= 15 {
+				text += "\nОстальные устройства доступны в приложении."
+				break
+			}
+			if dev := db.Devices[id]; dev != nil {
+				text += "\n" + deviceSummary(dev) + "\n"
+			}
+		}
+		dbMutex.Unlock()
+		return sendOrEditTelegram(token, adminID, messageID, text, inlineKeyboard([]map[string]interface{}{inlineButton("◀️ Назад", "viewpass_"+pass)}))
 	}
 	deviceID := entry.DeviceID
 	dev := db.Devices[deviceID]
@@ -2786,7 +2805,7 @@ func botLoop(token string, adminIDstr string, wgDev wgDevice) {
 						continue
 					}
 					payload := *pendingClientImport
-					password, entry, err := createBotClient(wgDev, payload.Password, 0, payload.ExpiresAt, payload.Label, payload.VkHash, defaultPortsSpec(), payload.Deactivated)
+					password, entry, err := createBotClient(wgDev, payload.Password, 0, payload.ExpiresAt, payload.Label, payload.VkHash, defaultPortsSpec(), payload.Deactivated, payload.Shared)
 					pendingClientImport = nil
 					if err != nil {
 						promptMessageID = sendOrEditTelegram(token, adminID, menuMessageID, "❌ Импорт отменён: "+mdCode(err.Error()), inlineKeyboard(
@@ -3235,8 +3254,8 @@ func botLoop(token string, adminIDstr string, wgDev wgDevice) {
 					dbMutex.Lock()
 					usedDevices := make(map[string]struct{})
 					for _, entry := range db.Passwords {
-						if entry != nil && entry.DeviceID != "" {
-							usedDevices[entry.DeviceID] = struct{}{}
+						for _, id := range passwordDeviceIDs(entry) {
+							usedDevices[id] = struct{}{}
 						}
 					}
 					removed := 0
@@ -3308,12 +3327,9 @@ func botLoop(token string, adminIDstr string, wgDev wgDevice) {
 					}
 					entry.IsDeactivated = true
 					serverWrapKeys.RemovePassword(pass)
-					// Отключаем активное устройство от WG если нужно
-					if entry.DeviceID != "" {
-						if dev, devExists := db.Devices[entry.DeviceID]; devExists {
-							if pubHex, err := b64ToHex(dev.PubKey); err == nil && pubHex != "" {
-								wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
-							}
+					for _, id := range passwordDeviceIDs(entry) {
+						if !databaseUsesDeviceIDExcept(db, id, pass) {
+							removePeerFromWG(wgDev, db.Devices[id])
 						}
 					}
 					saveDB()
@@ -3350,8 +3366,8 @@ func botLoop(token string, adminIDstr string, wgDev wgDevice) {
 						continue
 					}
 					entry.IsDeactivated = false
-					if entry.DeviceID != "" {
-						upsertPeerInWG(wgDev, db.Devices[entry.DeviceID])
+					for _, id := range passwordDeviceIDs(entry) {
+						upsertPeerInWG(wgDev, db.Devices[id])
 					}
 					saveDB()
 					dbMutex.Unlock()
@@ -3381,17 +3397,10 @@ func botLoop(token string, adminIDstr string, wgDev wgDevice) {
 					pass := strings.TrimPrefix(data, "unbind_")
 					dbMutex.Lock()
 					entry, exists := db.Passwords[pass]
-					if exists && entry != nil && entry.DeviceID != "" {
-						// Удаляем устройство из WG и из хранилища
-						oldDeviceID := entry.DeviceID
-						markActiveBindUnbound(entry, oldDeviceID, time.Now().Unix())
-						dev, devExists := db.Devices[entry.DeviceID]
-						if devExists {
-							pubHex, _ := b64ToHex(dev.PubKey)
-							wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
-							delete(db.Devices, oldDeviceID)
-						}
-						entry.DeviceID = ""
+					if exists && entry != nil {
+						snapshot := captureAdminLiveSnapshot(db, []string{"unbind", "--password", pass})
+						unbindPasswordDeviceAdmin(db, entry)
+						removeAdminSnapshotPeers(db, snapshot, wgDev)
 						saveDB()
 					}
 					dbMutex.Unlock()
@@ -3410,14 +3419,10 @@ func botLoop(token string, adminIDstr string, wgDev wgDevice) {
 					pass := strings.TrimPrefix(data, "confirmdel_")
 					dbMutex.Lock()
 					entry, exists := db.Passwords[pass]
-					if exists && entry != nil && entry.DeviceID != "" {
-						markActiveBindUnbound(entry, entry.DeviceID, time.Now().Unix())
-						dev, devExists := db.Devices[entry.DeviceID]
-						if devExists {
-							pubHex, _ := b64ToHex(dev.PubKey)
-							wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
-							delete(db.Devices, entry.DeviceID)
-						}
+					if exists && entry != nil {
+						snapshot := captureAdminLiveSnapshot(db, []string{"unbind", "--password", pass})
+						unbindPasswordDeviceAdmin(db, entry)
+						removeAdminSnapshotPeers(db, snapshot, wgDev)
 					}
 					delete(db.Passwords, pass)
 					serverWrapKeys.RemovePassword(pass)
@@ -3437,9 +3442,9 @@ func botLoop(token string, adminIDstr string, wgDev wgDevice) {
 						wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
 						// Очищаем привязку из пароля
 						for _, entry := range db.Passwords {
-							if entry != nil && entry.DeviceID == devID {
+							if passwordHasDevice(entry, devID) {
 								markActiveBindUnbound(entry, devID, time.Now().Unix())
-								entry.DeviceID = ""
+								forgetPasswordDevice(entry, devID)
 							}
 						}
 						saveDB()

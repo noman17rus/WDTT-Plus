@@ -44,7 +44,7 @@ readonly DEFAULT_MAX_HANDSHAKES=32
 readonly DEFAULT_HANDSHAKE_RATE=24
 readonly DEFAULT_MAX_CLIENT_MBPS=0
 readonly DEFAULT_WG_BACKEND="auto"
-readonly WDTT_SUBNET="10.66.66.0/24"
+readonly WDTT_SUBNET="10.66.0.0/16"
 readonly MIN_FREE_BYTES=$((20 * 1024 * 1024))
 readonly MAX_DATABASE_BYTES=$((64 * 1024 * 1024))
 
@@ -1793,7 +1793,7 @@ nft_runtime_rules_are_healthy() {
     nat_rules="$(nft list table ip wdtt 2>/dev/null)" || return 1
     forward_rules="$(nft list table inet wdtt 2>/dev/null)" || return 1
     nat_count="$(
-        grep -F "10.66.66.0/24" <<<"$nat_rules" |
+        grep -F "10.66.0.0/16" <<<"$nat_rules" |
             grep -F "$ext_iface" |
             grep -c "masquerade" || true
     )"
@@ -1810,7 +1810,7 @@ nft_runtime_rules_are_healthy() {
     [[ "$nat_count" == "1" && "$inbound_count" == "1" &&
         "$outbound_count" == "1" ]] &&
         grep -Fq "hook postrouting" <<<"$nat_rules" &&
-        grep -Fq "10.66.66.0/24" <<<"$nat_rules" &&
+        grep -Fq "10.66.0.0/16" <<<"$nat_rules" &&
         grep -Fq "$ext_iface" <<<"$nat_rules" &&
         grep -Fq "masquerade" <<<"$nat_rules" &&
         grep -Fq "hook forward" <<<"$forward_rules" &&
@@ -1855,8 +1855,8 @@ verify_runtime_health() {
         return 1
     }
     ip -4 address show dev wdtt0 2>/dev/null |
-        grep -Fq "10.66.66.1/24" || {
-        RUNTIME_HEALTH_ERROR="адрес интерфейса wdtt0 не равен 10.66.66.1/24"
+        grep -Fq "10.66.66.1/16" || {
+        RUNTIME_HEALTH_ERROR="адрес интерфейса wdtt0 не равен 10.66.66.1/16"
         return 1
     }
     port_is_busy "$DTLS_PORT" || {
@@ -1913,7 +1913,7 @@ subnet_route_conflicts() {
             base = ipnum(parts[1])
             first = int(base / size) * size
             last = first + size - 1
-            return first <= 172114687 && last >= 172114432
+            return first <= 172163071 && last >= 172097536
         }
         $0 !~ /(^|[[:space:]])dev[[:space:]]+wdtt0([[:space:]]|$)/ &&
         $1 != "default" && $1 != "broadcast" && $1 != "local" &&
@@ -2331,7 +2331,7 @@ umask 077
 
 readonly RUNTIME_DIR="/run/wdtt-server-installer-network"
 readonly BASELINE_PATH="$RUNTIME_DIR/sysctl-baseline"
-readonly WDTT_SUBNET="10.66.66.0/24"
+readonly WDTT_SUBNET="10.66.0.0/16"
 readonly WDTT_IFACE="wdtt0"
 
 readonly -a SYSCTL_KEYS=(
@@ -2386,6 +2386,7 @@ delete_tagged_iptables_rules() {
 cleanup_rules() {
     if command -v iptables >/dev/null 2>&1; then
         delete_tagged_iptables_rules nat POSTROUTING "-s $WDTT_SUBNET"
+        delete_tagged_iptables_rules nat POSTROUTING "-s 10.66.66.0/24"
         delete_tagged_iptables_rules filter FORWARD "$WDTT_IFACE"
     fi
     if command -v nft >/dev/null 2>&1; then
@@ -4541,8 +4542,8 @@ perform_doctor() {
             [[ -e /sys/class/net/wdtt0 ]] &&
                 doctor_ok "интерфейс wdtt0 существует" || doctor_error "интерфейс wdtt0 отсутствует"
             ip -4 address show dev wdtt0 2>/dev/null |
-                grep -Fq "10.66.66.1/24" &&
-                doctor_ok "адрес wdtt0 корректен" || doctor_error "адрес wdtt0 не равен 10.66.66.1/24"
+                grep -Fq "10.66.66.1/16" &&
+                doctor_ok "адрес wdtt0 корректен" || doctor_error "адрес wdtt0 не равен 10.66.66.1/16"
             port_is_busy "${CURRENT_DTLS_PORT:-$DEFAULT_DTLS_PORT}" &&
                 doctor_ok "DTLS UDP-порт прослушивается" || doctor_error "DTLS UDP-порт не прослушивается"
             port_is_busy "${CURRENT_WG_PORT:-$DEFAULT_WG_PORT}" &&

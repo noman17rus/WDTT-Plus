@@ -83,6 +83,7 @@ func adminErrorResponse(err error) adminResponse {
 type adminLiveSnapshot struct {
 	password string
 	device   *ClientDevice
+	devices  []*ClientDevice
 }
 
 type adminServerInfo struct {
@@ -183,6 +184,8 @@ type adminDeviceInfo struct {
 }
 
 type adminPasswordInfo struct {
+	Shared          bool               `json:"shared,omitempty"`
+	Devices         []adminDeviceInfo  `json:"devices,omitempty"`
 	Password        string             `json:"password"`
 	Label           string             `json:"label,omitempty"`
 	VkHash          string             `json:"vk_hash,omitempty"`
@@ -433,26 +436,36 @@ func captureAdminLiveSnapshot(loaded *Database, args []string) adminLiveSnapshot
 			return adminLiveSnapshot{}
 		}
 		snapshot := adminLiveSnapshot{password: password}
-		if entry := loaded.Passwords[password]; entry != nil && entry.DeviceID != "" {
-			if dev := loaded.Devices[entry.DeviceID]; dev != nil {
+		for _, id := range passwordDeviceIDs(loaded.Passwords[password]) {
+			if dev := loaded.Devices[id]; dev != nil {
 				copyOfDevice := *dev
-				snapshot.device = &copyOfDevice
+				snapshot.devices = append(snapshot.devices, &copyOfDevice)
+				if snapshot.device == nil {
+					snapshot.device = &copyOfDevice
+				}
 			}
 		}
 		return snapshot
-	case "set-password":
-		fs := flag.NewFlagSet("set-password", flag.ContinueOnError)
+	case "set-password", "update-client":
+		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		password := fs.String("password", "", "текущий пароль клиента")
 		_ = fs.String("new-password", "", "новый пароль клиента")
+		_ = fs.String("label", "", "")
+		_ = fs.String("vk-hash", "", "")
+		_ = fs.String("ports", "", "")
+		_ = fs.Bool("shared", false, "")
 		if err := fs.Parse(args[1:]); err != nil || strings.TrimSpace(*password) == "" {
 			return adminLiveSnapshot{}
 		}
 		snapshot := adminLiveSnapshot{password: strings.TrimSpace(*password)}
-		if entry := loaded.Passwords[snapshot.password]; entry != nil && entry.DeviceID != "" {
-			if dev := loaded.Devices[entry.DeviceID]; dev != nil {
+		for _, id := range passwordDeviceIDs(loaded.Passwords[snapshot.password]) {
+			if dev := loaded.Devices[id]; dev != nil {
 				copyOfDevice := *dev
-				snapshot.device = &copyOfDevice
+				snapshot.devices = append(snapshot.devices, &copyOfDevice)
+				if snapshot.device == nil {
+					snapshot.device = &copyOfDevice
+				}
 			}
 		}
 		return snapshot
@@ -466,6 +479,12 @@ func applyLiveAdminEffects(configDir string, loaded *Database, args []string, re
 		return nil
 	}
 	switch args[0] {
+	case "update-client":
+		for _, dev := range snapshotDevices(snapshot) {
+			if !passwordHasDevice(loaded.Passwords[snapshot.password], dev.DeviceID) {
+				removeAdminSnapshotPeers(loaded, adminLiveSnapshot{password: snapshot.password, device: dev}, wgDev)
+			}
+		}
 	case "create":
 		if response.Password == nil {
 			return errors.New("сервер создал клиента без пароля")
@@ -482,18 +501,12 @@ func applyLiveAdminEffects(configDir string, loaded *Database, args []string, re
 			return fmt.Errorf("не удалось добавить WRAP-ключ: %w", err)
 		}
 	case "delete":
-		if shouldRemoveAdminSnapshotPeer(loaded, snapshot) {
-			removePeerFromWG(wgDev, snapshot.device)
-		}
+		removeAdminSnapshotPeers(loaded, snapshot, wgDev)
 		serverWrapKeys.RemovePassword(snapshot.password)
 	case "unbind":
-		if shouldRemoveAdminSnapshotPeer(loaded, snapshot) {
-			removePeerFromWG(wgDev, snapshot.device)
-		}
+		removeAdminSnapshotPeers(loaded, snapshot, wgDev)
 	case "deactivate":
-		if shouldRemoveAdminSnapshotPeer(loaded, snapshot) {
-			removePeerFromWG(wgDev, snapshot.device)
-		}
+		removeAdminSnapshotPeers(loaded, snapshot, wgDev)
 		serverWrapKeys.RemovePassword(snapshot.password)
 	case "activate":
 		if err := serverWrapKeys.AddPassword(snapshot.password); err != nil {
@@ -505,7 +518,9 @@ func applyLiveAdminEffects(configDir string, loaded *Database, args []string, re
 			}
 			return fmt.Errorf("не удалось вернуть WRAP-ключ: %w", err)
 		}
-		upsertPeerInWG(wgDev, snapshot.device)
+		for _, dev := range snapshotDevices(snapshot) {
+			upsertPeerInWG(wgDev, dev)
+		}
 	case "set-password":
 		if response.Password == nil {
 			return errors.New("сервер изменил пароль клиента без нового значения")
@@ -525,9 +540,7 @@ func applyLiveAdminEffects(configDir string, loaded *Database, args []string, re
 			}
 		}
 		serverWrapKeys.RemovePassword(snapshot.password)
-		if shouldRemoveAdminSnapshotPeer(loaded, snapshot) {
-			removePeerFromWG(wgDev, snapshot.device)
-		}
+		removeAdminSnapshotPeers(loaded, snapshot, wgDev)
 	case "set-expiry":
 		if response.Password == nil {
 			return errors.New("сервер обновил срок клиента без состояния доступа")
@@ -931,8 +944,8 @@ func clientDeviceIDSet(loaded *Database) map[string]struct{} {
 		if entry == nil {
 			continue
 		}
-		if deviceID := strings.TrimSpace(entry.DeviceID); deviceID != "" {
-			result[deviceID] = struct{}{}
+		for _, id := range passwordDeviceIDs(entry) {
+			result[id] = struct{}{}
 		}
 		for _, event := range entry.BindHistory {
 			deviceID := strings.TrimSpace(event.DeviceID)
@@ -970,8 +983,8 @@ func buildAdminServerInfo(configDir string, loaded *Database) *adminServerInfo {
 		} else if !entry.IsDeactivated {
 			active++
 		}
-		if entry.DeviceID != "" {
-			usedDevices[entry.DeviceID] = struct{}{}
+		for _, id := range passwordDeviceIDs(entry) {
+			usedDevices[id] = struct{}{}
 		}
 	}
 	ownerDevices := adminDeviceIDSet(loaded)
@@ -1246,6 +1259,12 @@ func buildAdminPasswordInfo(loaded *Database, password string, entry *PasswordEn
 	info.PurgeAfter = entry.PurgeAfter
 	info.DownBytes = entry.DownBytes
 	info.UpBytes = entry.UpBytes
+	info.Shared = entry.Shared
+	for _, id := range passwordDeviceIDs(entry) {
+		if dev := loaded.Devices[id]; dev != nil {
+			info.Devices = append(info.Devices, buildAdminDeviceInfo(dev))
+		}
+	}
 	info.DeviceID = entry.DeviceID
 	info.BindEventsCount = len(entry.BindHistory)
 	info.Traffic = buildAdminTrafficPeriod(entry.Traffic, entry.DownBytes, entry.UpBytes)
@@ -1336,6 +1355,7 @@ func adminCreatePassword(configDir string, loaded *Database, args []string) (adm
 		"не удалять истёкшую запись до unix timestamp",
 	)
 	deactivated := fs.Bool("deactivated", false, "создать клиента отключённым")
+	shared := fs.Bool("shared", false, "общая ссылка без лимита устройств")
 	if err := fs.Parse(args); err != nil {
 		return adminResponse{}, err
 	}
@@ -1395,6 +1415,7 @@ func adminCreatePassword(configDir string, loaded *Database, args []string) (adm
 		VkHash:        normalizedHash,
 		Ports:         normalizedPorts,
 		IsDeactivated: *deactivated,
+		Shared:        *shared,
 	}
 	if *expiresAt >= 0 {
 		if *expiresAt > 0 && *expiresAt <= time.Now().Unix() {
@@ -1777,6 +1798,7 @@ func adminUpdateClient(configDir string, loaded *Database, args []string) (admin
 	label := fs.String("label", "", "название")
 	hash := fs.String("vk-hash", "", "VK-хеш или ссылка")
 	ports := fs.String("ports", "", "DTLS,WG,TUN")
+	shared := fs.Bool("shared", false, "общая ссылка без лимита устройств")
 	if err := fs.Parse(args); err != nil {
 		return adminResponse{}, err
 	}
@@ -1795,6 +1817,17 @@ func adminUpdateClient(configDir string, loaded *Database, args []string) (admin
 	if err != nil {
 		return adminResponse{}, err
 	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "shared" && entry.Shared != *shared {
+			if *shared {
+				entry.DeviceIDs = passwordDeviceIDs(entry)
+				entry.DeviceID = ""
+			} else {
+				unbindPasswordDeviceAdmin(loaded, entry)
+			}
+			entry.Shared = *shared
+		}
+	})
 	entry.Label = normalizePasswordLabel(*label)
 	entry.VkHash = normalizedHash
 	entry.Ports = normalizedPorts
@@ -2054,8 +2087,8 @@ func adminCleanupExpired(configDir string, loaded *Database, wgDev wgDevice, liv
 func adminCleanupOrphans(configDir string, loaded *Database, wgDev wgDevice, live bool) (adminResponse, error) {
 	used := make(map[string]struct{})
 	for _, entry := range loaded.Passwords {
-		if entry != nil && entry.DeviceID != "" {
-			used[entry.DeviceID] = struct{}{}
+		for _, id := range passwordDeviceIDs(entry) {
+			used[id] = struct{}{}
 		}
 	}
 	for deviceID := range adminDeviceIDSet(loaded) {
@@ -2196,9 +2229,9 @@ func cleanupExpiredPasswordsAdminAt(loaded *Database, nowUnix int64) int {
 	deviceCandidates := make(map[string]struct{})
 	for password, entry := range loaded.Passwords {
 		if isPasswordPurgeableAt(entry, nowUnix) {
-			if entry != nil && entry.DeviceID != "" {
-				markActiveBindUnbound(entry, entry.DeviceID, nowUnix)
-				deviceCandidates[entry.DeviceID] = struct{}{}
+			for _, id := range passwordDeviceIDs(entry) {
+				markActiveBindUnbound(entry, id, nowUnix)
+				deviceCandidates[id] = struct{}{}
 			}
 			delete(loaded.Passwords, password)
 			removed++
@@ -2219,14 +2252,17 @@ func unbindPasswordDeviceAdmin(loaded *Database, entry *PasswordEntry) {
 }
 
 func unbindPasswordDeviceAdminAt(loaded *Database, entry *PasswordEntry, ts int64) {
-	if entry == nil || entry.DeviceID == "" {
+	ids := passwordDeviceIDs(entry)
+	if entry == nil {
 		return
 	}
-	oldDeviceID := entry.DeviceID
-	markActiveBindUnbound(entry, oldDeviceID, ts)
 	entry.DeviceID = ""
-	if _, isAdminDevice := adminDeviceIDSet(loaded)[oldDeviceID]; !isAdminDevice && !databaseUsesDeviceID(loaded, oldDeviceID) {
-		delete(loaded.Devices, oldDeviceID)
+	entry.DeviceIDs = nil
+	for _, id := range ids {
+		markActiveBindUnbound(entry, id, ts)
+		if _, isAdmin := adminDeviceIDSet(loaded)[id]; !isAdmin && !databaseUsesDeviceID(loaded, id) {
+			delete(loaded.Devices, id)
+		}
 	}
 }
 

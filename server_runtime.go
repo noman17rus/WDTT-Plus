@@ -23,9 +23,10 @@ const (
 )
 
 type accessIdentity struct {
-	id       string
-	password string
-	isMain   bool
+	id            string
+	password      string
+	isMain        bool
+	runtimeDevice string
 }
 
 func (i accessIdentity) valid() bool {
@@ -218,7 +219,11 @@ func configuredAccessRuntimeLimits() (int, float64) {
 }
 
 func (r *accessRuntimeRegistry) getOrCreateLocked(identity accessIdentity) *accessRuntime {
-	if item := r.items[identity.id]; item != nil {
+	key := identity.id
+	if identity.runtimeDevice != "" {
+		key += "\x00" + identity.runtimeDevice
+	}
+	if item := r.items[key]; item != nil {
 		return item
 	}
 	bytesPerSecond := r.clientMbps * 1_000_000 / 8
@@ -235,7 +240,7 @@ func (r *accessRuntimeRegistry) getOrCreateLocked(identity accessIdentity) *acce
 		upload:   newTokenBucket(bytesPerSecond, burst),
 		download: newTokenBucket(bytesPerSecond, burst),
 	}
-	r.items[identity.id] = item
+	r.items[key] = item
 	return item
 }
 
@@ -551,6 +556,9 @@ func currentAccessIdentityState(identity accessIdentity) accessIdentityState {
 	}
 	entry, ok := db.Passwords[identity.password]
 	if !ok || entry == nil {
+		return accessIdentityUnknown
+	}
+	if identity.runtimeDevice != "" && !passwordHasDevice(entry, identity.runtimeDevice) {
 		return accessIdentityUnknown
 	}
 	if isPasswordExpired(entry) {

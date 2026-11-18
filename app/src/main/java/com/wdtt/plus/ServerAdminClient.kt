@@ -131,7 +131,9 @@ data class ServerClientInfo(
     val bindEventsCount: Int,
     val traffic: ServerTrafficPeriod,
     val device: ServerDeviceInfo?,
-    val bindHistory: List<ServerBindEvent>
+    val bindHistory: List<ServerBindEvent>,
+    val shared: Boolean = false,
+    val devices: List<ServerDeviceInfo> = emptyList()
 ) {
     val title: String
         get() = label.ifBlank { "Без имени" }
@@ -140,7 +142,7 @@ data class ServerClientInfo(
         get() = status == "active"
 
     val isBound: Boolean
-        get() = deviceId.isNotBlank()
+        get() = deviceId.isNotBlank() || devices.isNotEmpty()
 }
 
 data class ServerClientCreateRequest(
@@ -150,7 +152,8 @@ data class ServerClientCreateRequest(
     val ports: String,
     val password: String? = null,
     val expiresAt: Long? = null,
-    val deactivated: Boolean = false
+    val deactivated: Boolean = false,
+    val shared: Boolean = false
 )
 
 data class ServerAdminActionResult(
@@ -268,6 +271,7 @@ object ServerAdminClient {
                 request.password?.takeIf { it.isNotBlank() }?.let { args += listOf("--client-password", it) }
                 request.expiresAt?.let { args += listOf("--expires-at", it.coerceAtLeast(0).toString()) }
                 if (request.deactivated) args += "--deactivated"
+                if (request.shared) args += "--shared"
                 actionFromResponse(callAdmin(ssh, target, args))
             }
         }
@@ -285,7 +289,8 @@ object ServerAdminClient {
             ports = targetPorts,
             password = payload.password,
             expiresAt = payload.expiresAt,
-            deactivated = payload.deactivated
+            deactivated = payload.deactivated,
+            shared = payload.shared
         )
     )
 
@@ -334,14 +339,14 @@ object ServerAdminClient {
     suspend fun setPassword(target: ServerAdminTarget, password: String, newPassword: String): ServerAdminActionResult =
         runArgsAction(target, listOf("set-password", "--password", password, "--new-password", newPassword))
 
-    suspend fun updateClient(target: ServerAdminTarget, password: String, label: String, hash: String, ports: String): ServerAdminActionResult =
+    suspend fun updateClient(target: ServerAdminTarget, password: String, label: String, hash: String, ports: String, shared: Boolean? = null): ServerAdminActionResult =
         withContext(Dispatchers.IO) {
             withSession(target) { ssh ->
                 val requestedLabel = label.trim()
                 val updated = actionFromResponse(callAdmin(ssh, target, listOf(
                     "update-client", "--password", password,
                     "--label", requestedLabel, "--vk-hash", hash, "--ports", ports
-                )))
+                ) + (shared?.let { listOf("--shared=$it") } ?: emptyList())))
                 val relabeled = actionFromResponse(
                     callAdmin(ssh, target, listOf("set-label", "--password", password, "--label", requestedLabel))
                 )
@@ -864,6 +869,13 @@ object ServerAdminClient {
             expiresAt = json.optLong("expires_at", 0),
             downBytes = json.optLong("down_bytes", 0),
             upBytes = json.optLong("up_bytes", 0),
+            shared = json.optBoolean("shared", false),
+            devices = buildList {
+                val raw = json.optJSONArray("devices")
+                if (raw != null) for (index in 0 until raw.length()) {
+                    raw.optJSONObject(index)?.let { add(parseDevice(it)) }
+                }
+            },
             deviceId = json.optString("device_id"),
             deviceName = json.optString("device_name"),
             deviceIp = json.optString("device_ip"),

@@ -13,6 +13,42 @@ import java.util.Base64
 
 class ServerMigrationTest {
     @Test
+    fun sharedDevicesAreValidatedCountedAndMerged() {
+        val source = database("shared", "Общая")
+        source.getJSONObject("passwords").getJSONObject("shared")
+            .put("shared", true).put("device_ids", JSONArray().put("one").put("two"))
+        source.getJSONObject("devices").put("one", device("one", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="))
+            .put("two", device("two", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=").put("ip", "10.66.66.3"))
+        validatePasswordsDbStructure(source)
+        assertEquals(2, clientDeviceCountForBackup(source))
+        val target = database("existing", "Личный")
+        mergeServerDatabaseEntries(source, target, "56000,56001,9000")
+        assertTrue(target.getJSONObject("passwords").getJSONObject("shared").getBoolean("shared"))
+        assertTrue(target.getJSONObject("devices").has("one"))
+        assertTrue(target.getJSONObject("devices").has("two"))
+        validateImportedServerState(source.toString(), null, source.toString(), replace = true)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun sharedBindingCannotReferenceMissingDevice() {
+        val source = database("shared", "Общая")
+        source.getJSONObject("passwords").getJSONObject("shared")
+            .put("shared", true).put("device_ids", JSONArray().put("missing"))
+        validatePasswordsDbStructure(source)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun preservingUpdateCannotDropSharedBindings() {
+        val before = database("shared", "Общая")
+        before.getJSONObject("passwords").getJSONObject("shared")
+            .put("shared", true).put("device_ids", JSONArray().put("one"))
+        before.getJSONObject("devices").put("one", device("one", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="))
+        val after = JSONObject(before.toString())
+        after.getJSONObject("passwords").getJSONObject("shared").put("device_ids", JSONArray())
+        validatePreservedServerState(before.toString(), after.toString())
+    }
+
+    @Test
     fun backupValidation_acceptsCurrentOwnerAndClientFields() {
         validatePasswordsDbStructure(database("client-a", "Телефон"))
     }
