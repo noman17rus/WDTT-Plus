@@ -1585,6 +1585,7 @@ func main() {
 	handshakeRateFlag := flag.Float64("handshake-rate", defaultHandshakeRate, "допустимые DTLS-рукопожатия в секунду")
 	clientMbpsFlag := flag.Float64("max-client-mbps", defaultClientMbps, "общий лимит Мбит/с на один доступ; 0 отключает")
 	wgBackendFlag := flag.String("wg-backend", "auto", "WireGuard backend: auto, kernel или userspace")
+	metricsSocketFlag := flag.String("metrics-socket", os.Getenv("WDTT_METRICS_SOCKET"), "HTTP metrics Unix socket; empty disables monitoring")
 	flag.Parse()
 
 	if *maxPasswordsFlag < 1 {
@@ -1653,6 +1654,11 @@ func main() {
 	syncPersistedPeersToWG(wgDev)
 	if err := startAdminSocket(ctx, *configDir, wgDev); err != nil {
 		log.Fatalf("[ADMIN] Локальное управление: %v", err)
+	}
+	if *metricsSocketFlag != "" {
+		if err := startMetricsSocket(ctx, *configDir, *metricsSocketFlag); err != nil {
+			log.Fatalf("[METRICS] %v", err)
+		}
 	}
 	startServerBackupScheduler(ctx, *configDir)
 	defer func() {

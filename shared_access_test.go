@@ -23,12 +23,12 @@ func (c *sharedTestConn) SetWriteDeadline(time.Time) error { return nil }
 
 func TestSharedAccessHasNoSingleDeviceBindingLimit(t *testing.T) {
 	entry := &PasswordEntry{Shared: true}
-	for i := 0; i < 600; i++ {
+	for i := 0; i < 1000; i++ {
 		if !bindPasswordDevice(entry, fmt.Sprintf("phone-%d", i)) {
 			t.Fatal("shared binding rejected", i)
 		}
 	}
-	if bindPasswordDevice(entry, "phone-0") || len(passwordDeviceIDs(entry)) != 600 {
+	if bindPasswordDevice(entry, "phone-0") || len(passwordDeviceIDs(entry)) != 1000 {
 		t.Fatal("duplicate binding or truncated device list")
 	}
 	raw, err := json.Marshal(entry)
@@ -36,11 +36,11 @@ func TestSharedAccessHasNoSingleDeviceBindingLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	var restored PasswordEntry
-	if err = json.Unmarshal(raw, &restored); err != nil || !restored.Shared || !passwordHasDevice(&restored, "phone-599") {
+	if err = json.Unmarshal(raw, &restored); err != nil || !restored.Shared || !passwordHasDevice(&restored, "phone-999") {
 		t.Fatal("shared bindings did not persist", err)
 	}
 	forgetPasswordDevice(&restored, "phone-0")
-	if passwordHasDevice(&restored, "phone-0") || !passwordHasDevice(&restored, "phone-599") {
+	if passwordHasDevice(&restored, "phone-0") || !passwordHasDevice(&restored, "phone-999") {
 		t.Fatal("removing one device changed other bindings")
 	}
 	single := &PasswordEntry{}
